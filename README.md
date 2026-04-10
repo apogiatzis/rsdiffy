@@ -83,6 +83,7 @@ rsdiffy list      # List running instances
 rsdiffy kill      # Stop all running instances
 rsdiffy prune     # Remove all rsdiffy data (~/.rsdiffy)
 rsdiffy doctor    # Check that rsdiffy can run correctly
+rsdiffy export    # Export review comments as JSON
 ```
 
 ### GitLab integration

@@ -41,7 +41,9 @@ Other commands:
   $ rsdiffy tree                         Browse repository files
   $ rsdiffy list                         List running instances
   $ rsdiffy kill                         Stop all running instances
-  $ rsdiffy prune                        Remove all rsdiffy data"#
+  $ rsdiffy prune                        Remove all rsdiffy data
+  $ rsdiffy export                       Export review comments as JSON
+  $ rsdiffy export --status open         Export only open comments"#
 )]
 struct Cli {
     /// Git refs to diff
@@ -116,6 +118,15 @@ enum Commands {
     Prune,
     /// Check that rsdiffy can run correctly
     Doctor,
+    /// Export review comments for the current session
+    Export {
+        /// Git ref to export comments for (default: current session)
+        #[arg(long)]
+        git_ref: Option<String>,
+        /// Filter by status: open, resolved, all (default: all)
+        #[arg(long, default_value = "all")]
+        status: String,
+    },
 }
 
 fn main() {
@@ -134,6 +145,7 @@ fn main() {
             Commands::Kill => run_kill(),
             Commands::Prune => run_prune(),
             Commands::Doctor => run_doctor(),
+            Commands::Export { git_ref, status } => run_export(git_ref, status),
         }
     } else {
         run_diff(cli);
@@ -528,6 +540,177 @@ fn run_doctor() {
         println!("{}", "  Some checks failed.".red());
         process::exit(1);
     }
+}
+
+fn run_export(git_ref: Option<String>, status: String) {
+    if !repo::is_git_repo() {
+        eprintln!("{}", "Error: Not a git repository".red());
+        process::exit(1);
+    }
+
+    let rsdiffy_dir = repo::get_rsdiffy_dir().unwrap_or_else(|e| {
+        eprintln!("{}", format!("Error: {}", e).red());
+        process::exit(1);
+    });
+
+    let conn = db::open_db(&rsdiffy_dir).unwrap_or_else(|e| {
+        eprintln!("{}", format!("Error opening database: {}", e).red());
+        process::exit(1);
+    });
+
+    let session_id = match &git_ref {
+        Some(r) => {
+            let head_hash = repo::get_head_hash().unwrap_or_default();
+            match session::find_or_create_session(&rsdiffy_dir, r, &head_hash) {
+                Ok(s) => s.id,
+                Err(e) => {
+                    eprintln!("{}", format!("Error finding session for ref '{}': {}", r, e).red());
+                    process::exit(1);
+                }
+            }
+        }
+        None => match session::get_current_session(&rsdiffy_dir) {
+            Ok(Some(s)) => s.id,
+            _ => {
+                eprintln!("{}", "No current session. Run rsdiffy first or pass --git-ref.".red());
+                process::exit(1);
+            }
+        },
+    };
+
+    let status_filter = match status.as_str() {
+        "all" => None,
+        s => Some(s),
+    };
+
+    let thread_list = threads::get_threads_for_session(&conn, &session_id, status_filter)
+        .unwrap_or_else(|e| {
+            eprintln!("{}", format!("Error reading threads: {}", e).red());
+            process::exit(1);
+        });
+
+    let tour_list = tours::get_tours_for_session(&conn, &session_id).unwrap_or_default();
+
+    let repo_root = repo::get_repo_root().unwrap_or_default();
+
+    let export = ExportPayload {
+        version: 1,
+        repo_root,
+        git_ref: git_ref.unwrap_or_else(|| {
+            session::get_current_session(&rsdiffy_dir)
+                .ok()
+                .flatten()
+                .map(|s| s.git_ref)
+                .unwrap_or_default()
+        }),
+        session_id,
+        comments: thread_list
+            .into_iter()
+            .map(|t| {
+                let location = if t.start_line == t.end_line {
+                    format!("{}:{}", t.file_path, t.start_line)
+                } else {
+                    format!("{}:{}-{}", t.file_path, t.start_line, t.end_line)
+                };
+                ExportComment {
+                    file_path: t.file_path,
+                    start_line: t.start_line,
+                    end_line: t.end_line,
+                    location,
+                    side: t.side,
+                    status: t.status,
+                    anchor_content: t.anchor_content,
+                    messages: t
+                        .comments
+                        .into_iter()
+                        .map(|c| ExportMessage {
+                            author: c.author.name,
+                            body: c.body,
+                            created_at: c.created_at,
+                        })
+                        .collect(),
+                }
+            })
+            .collect(),
+        tours: tour_list
+            .into_iter()
+            .map(|t| ExportTour {
+                topic: t.topic,
+                body: t.body,
+                status: t.status,
+                steps: t
+                    .steps
+                    .into_iter()
+                    .map(|s| ExportTourStep {
+                        file_path: s.file_path.clone(),
+                        start_line: s.start_line,
+                        end_line: s.end_line,
+                        location: if s.start_line == s.end_line {
+                            format!("{}:{}", s.file_path, s.start_line)
+                        } else {
+                            format!("{}:{}-{}", s.file_path, s.start_line, s.end_line)
+                        },
+                        body: s.body,
+                        annotation: s.annotation,
+                    })
+                    .collect(),
+            })
+            .collect(),
+    };
+
+    println!("{}", serde_json::to_string_pretty(&export).unwrap());
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExportPayload {
+    version: u32,
+    repo_root: String,
+    git_ref: String,
+    session_id: String,
+    comments: Vec<ExportComment>,
+    tours: Vec<ExportTour>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExportComment {
+    file_path: String,
+    start_line: i64,
+    end_line: i64,
+    location: String,
+    side: String,
+    status: String,
+    anchor_content: Option<String>,
+    messages: Vec<ExportMessage>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExportMessage {
+    author: String,
+    body: String,
+    created_at: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExportTour {
+    topic: String,
+    body: String,
+    status: String,
+    steps: Vec<ExportTourStep>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExportTourStep {
+    file_path: String,
+    start_line: i64,
+    end_line: i64,
+    location: String,
+    body: String,
+    annotation: Option<String>,
 }
 
 fn build_url(port: u16, effective_ref: &str, dark: bool, unified: bool) -> String {
