@@ -40,7 +40,7 @@ pub fn get_rsdiffy_dir_path() -> Result<String> {
     let digest = sha256_hex(&repo_root);
     let hash = &digest[..12];
     let home = dirs_home();
-    Ok(format!("{home}/.rsdiffy/{hash}"))
+    Ok(format!("{home}/.config/rsdiffy/{hash}"))
 }
 
 pub fn get_rsdiffy_dir() -> Result<String> {

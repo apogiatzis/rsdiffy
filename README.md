@@ -81,7 +81,7 @@ rsdiffy --new
 rsdiffy tree      # Browse repository files
 rsdiffy list      # List running instances
 rsdiffy kill      # Stop all running instances
-rsdiffy prune     # Remove all rsdiffy data (~/.rsdiffy)
+rsdiffy prune     # Remove all rsdiffy data (~/.config/rsdiffy)
 rsdiffy doctor    # Check that rsdiffy can run correctly
 rsdiffy export    # Export review comments as JSON
 ```

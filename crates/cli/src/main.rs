@@ -475,7 +475,7 @@ fn run_kill() {
 
 fn run_prune() {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let dir = format!("{}/.rsdiffy", home);
+    let dir = format!("{}/.config/rsdiffy", home);
 
     if !std::path::Path::new(&dir).exists() {
         println!("{}", "Nothing to prune.".dimmed());
@@ -499,7 +499,7 @@ fn run_prune() {
     }
 
     let _ = std::fs::remove_dir_all(&dir);
-    println!("{}", "Pruned all rsdiffy data (~/.rsdiffy).".green());
+    println!("{}", "Pruned all rsdiffy data (~/.config/rsdiffy).".green());
 }
 
 fn run_doctor() {

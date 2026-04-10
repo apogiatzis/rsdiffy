@@ -17,7 +17,7 @@ pub struct Instance {
 
 fn registry_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    Path::new(&home).join(".rsdiffy").join("registry.json")
+    Path::new(&home).join(".config").join("rsdiffy").join("registry.json")
 }
 
 fn ensure_registry_dir() -> Result<()> {

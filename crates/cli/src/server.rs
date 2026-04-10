@@ -23,7 +23,7 @@ pub struct AppState {
     pub effective_ref: String,
     /// Whether to include untracked files in the diff.
     pub include_untracked: bool,
-    /// Path to the .rsdiffy data directory for this repo.
+    /// Path to the rsdiffy data directory for this repo.
     pub rsdiffy_dir: String,
     /// Detected GitLab remote, if any.
     pub gitlab_remote: Option<GitLabRemote>,
