@@ -42,6 +42,8 @@ Other commands:
   $ rsdiffy list                         List running instances
   $ rsdiffy kill                         Stop all running instances
   $ rsdiffy prune                        Remove all rsdiffy data
+  $ rsdiffy review main                   AI review of changes from main
+  $ rsdiffy review --agent codex          Use a different agent
   $ rsdiffy export                       Export review comments as JSON
   $ rsdiffy export --status open         Export only open comments"#
 )]
@@ -118,6 +120,18 @@ enum Commands {
     Prune,
     /// Check that rsdiffy can run correctly
     Doctor,
+    /// Run an AI agent to review changes and leave comments
+    Review {
+        /// Git ref to review (e.g. main, HEAD~1, staged)
+        #[arg(name = "REF")]
+        git_ref: Option<String>,
+        /// Agent to use: claude, codex, or a custom command
+        #[arg(long, default_value = "claude")]
+        agent: String,
+        /// Custom prompt to prepend to the review instructions
+        #[arg(long)]
+        prompt: Option<String>,
+    },
     /// Export review comments for the current session
     Export {
         /// Git ref to export comments for (default: current session)
@@ -145,6 +159,7 @@ fn main() {
             Commands::Kill => run_kill(),
             Commands::Prune => run_prune(),
             Commands::Doctor => run_doctor(),
+            Commands::Review { git_ref, agent, prompt } => run_review(git_ref, agent, prompt),
             Commands::Export { git_ref, status } => run_export(git_ref, status),
         }
     } else {
@@ -540,6 +555,214 @@ fn run_doctor() {
         println!("{}", "  Some checks failed.".red());
         process::exit(1);
     }
+}
+
+fn run_review(git_ref: Option<String>, agent: String, custom_prompt: Option<String>) {
+    if !repo::is_git_repo() {
+        eprintln!("{}", "Error: Not a git repository".red());
+        process::exit(1);
+    }
+
+    let effective_ref = git_ref.unwrap_or_else(|| "work".to_string());
+
+    for r in effective_ref.split("..") {
+        if !diff::WORKING_TREE_REFS.contains(&r) && !repo::is_valid_git_ref(r) {
+            eprintln!("{}", format!("Error: '{}' is not a valid git reference.", r).red());
+            process::exit(1);
+        }
+    }
+
+    let raw_diff = diff::resolve_ref(&effective_ref, &[]).unwrap_or_else(|e| {
+        eprintln!("{}", format!("Error getting diff: {}", e).red());
+        process::exit(1);
+    });
+
+    if raw_diff.trim().is_empty() {
+        println!("{}", "No changes to review.".dimmed());
+        return;
+    }
+
+    let rsdiffy_dir = repo::get_rsdiffy_dir().unwrap_or_else(|e| {
+        eprintln!("{}", format!("Error: {}", e).red());
+        process::exit(1);
+    });
+
+    let head_hash = repo::get_head_hash().unwrap_or_default();
+    let session = session::find_or_create_session(&rsdiffy_dir, &effective_ref, &head_hash)
+        .unwrap_or_else(|e| {
+            eprintln!("{}", format!("Error creating session: {}", e).red());
+            process::exit(1);
+        });
+
+    let system_prompt = build_review_prompt(&raw_diff, custom_prompt.as_deref());
+
+    let (cmd, args) = resolve_agent_command(&agent);
+
+    println!("  {} Reviewing with {}...", "●".cyan(), agent.bold());
+
+    let output = std::process::Command::new(&cmd)
+        .args(&args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::inherit())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            if let Some(ref mut stdin) = child.stdin {
+                let _ = stdin.write_all(system_prompt.as_bytes());
+            }
+            child.wait_with_output()
+        });
+
+    let output = match output {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
+        Ok(o) => {
+            eprintln!(
+                "{}",
+                format!("Agent exited with status {}", o.status).red()
+            );
+            process::exit(1);
+        }
+        Err(e) => {
+            eprintln!(
+                "{}",
+                format!(
+                    "Failed to run '{}': {}. Is the agent installed and in PATH?",
+                    cmd, e
+                )
+                .red()
+            );
+            process::exit(1);
+        }
+    };
+
+    let comments = parse_agent_comments(&output);
+
+    if comments.is_empty() {
+        println!("  {} Agent returned no comments.", "✓".green());
+        return;
+    }
+
+    let conn = db::open_db(&rsdiffy_dir).unwrap_or_else(|e| {
+        eprintln!("{}", format!("Error opening database: {}", e).red());
+        process::exit(1);
+    });
+
+    let mut count = 0;
+    for c in &comments {
+        if threads::create_thread(
+            &conn,
+            &session.id,
+            &c.file_path,
+            &c.side,
+            c.start_line,
+            c.end_line,
+            &c.body,
+            "AI Review",
+            "bot",
+            None,
+        )
+        .is_ok()
+        {
+            count += 1;
+        }
+    }
+
+    println!(
+        "  {} {} comment{} added to session.",
+        "✓".green(),
+        count,
+        if count == 1 { "" } else { "s" }
+    );
+    println!(
+        "  {}",
+        format!("Run `rsdiffy {}` to view them.", effective_ref).dimmed()
+    );
+}
+
+fn resolve_agent_command(agent: &str) -> (String, Vec<String>) {
+    match agent {
+        "claude" => ("claude".to_string(), vec!["-p".to_string()]),
+        "codex" => ("codex".to_string(), vec!["-q".to_string()]),
+        custom => {
+            let parts: Vec<&str> = custom.split_whitespace().collect();
+            let cmd = parts[0].to_string();
+            let args: Vec<String> = parts[1..].iter().map(|s| s.to_string()).collect();
+            (cmd, args)
+        }
+    }
+}
+
+fn build_review_prompt(diff: &str, custom_prompt: Option<&str>) -> String {
+    let preamble = custom_prompt.unwrap_or(
+        "You are a senior code reviewer. Review the following diff carefully.",
+    );
+
+    format!(
+        r#"{preamble}
+
+For each issue you find, output a JSON comment object. Return ONLY a JSON array — no markdown fences, no explanation outside the array.
+
+Each object must have these fields:
+- "filePath": the file path as shown in the diff header (e.g. "src/main.rs")
+- "startLine": the line number in the NEW file where the comment applies
+- "endLine": same as startLine for single-line comments, or the last line for multi-line
+- "side": always "new"
+- "body": your review comment in markdown
+
+Example output:
+[
+  {{
+    "filePath": "src/lib.rs",
+    "startLine": 42,
+    "endLine": 42,
+    "side": "new",
+    "body": "This unwrap() will panic if the input is None. Consider using `ok_or()` to return a meaningful error."
+  }}
+]
+
+If there are no issues, return an empty array: []
+
+Here is the diff to review:
+
+{diff}
+"#
+    )
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentComment {
+    file_path: String,
+    start_line: i64,
+    end_line: i64,
+    side: String,
+    body: String,
+}
+
+fn parse_agent_comments(output: &str) -> Vec<AgentComment> {
+    let trimmed = output.trim();
+
+    // Try parsing directly
+    if let Ok(comments) = serde_json::from_str::<Vec<AgentComment>>(trimmed) {
+        return comments;
+    }
+
+    // Try extracting JSON array from markdown fences or surrounding text
+    if let Some(start) = trimmed.find('[') {
+        if let Some(end) = trimmed.rfind(']') {
+            let slice = &trimmed[start..=end];
+            if let Ok(comments) = serde_json::from_str::<Vec<AgentComment>>(slice) {
+                return comments;
+            }
+        }
+    }
+
+    eprintln!(
+        "{}",
+        "Warning: Could not parse agent output as JSON comments.".yellow()
+    );
+    Vec::new()
 }
 
 fn run_export(git_ref: Option<String>, status: String) {

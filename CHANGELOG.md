@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- `rsdiffy review` subcommand — runs a configurable AI agent (Claude, Codex, or custom) to review changes and leave comments directly in rsdiffy. Supports `--agent`, `--prompt`, and positional ref argument.
 - `rsdiffy export` subcommand — exports review comments and code tours as structured JSON for consumption by LLM agents and scripts. Supports `--git-ref` and `--status` filters.
 
 ### Changed
