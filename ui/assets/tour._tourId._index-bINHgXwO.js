@@ -1,0 +1,1 @@
+import{M as e,w as t}from"./chunk-UVKPFVEO-CRQcFNG_.js";import{t as n}from"./query-client-CTjR58lS.js";import{t as r}from"./tree-H2uHVCYd.js";async function i({params:e}){throw(await n.ensureQueryData(r(e.tourId))).steps.length>0?t(`/tour/${e.tourId}/0`):t(`/tree`)}var a=e(function(){return null});export{i as clientLoader,a as default};

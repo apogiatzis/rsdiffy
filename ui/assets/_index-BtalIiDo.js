@@ -1,0 +1,1 @@
+import{M as e,w as t}from"./chunk-UVKPFVEO-CRQcFNG_.js";function n(){throw t(`/diff`)}var r=e(function(){return null});export{n as clientLoader,r as default};

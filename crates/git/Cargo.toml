@@ -1,0 +1,12 @@
+[package]
+name = "rsdiffy-git"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rsdiffy-parser = { path = "../parser" }
+thiserror = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
