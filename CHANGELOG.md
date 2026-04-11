@@ -2,10 +2,12 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-04-11
+
 ### Added
-- `rsdiffy review` subcommand — runs a configurable AI agent (Claude, Codex) to review changes and leave comments directly in rsdiffy. Supports `--agent`, `--prompt`, and positional ref argument.
+- `rsdiffy review` subcommand — runs an AI agent (Claude or Codex) to review changes and leave comments directly in rsdiffy. Supports `--agent`, `--prompt`, and positional ref argument.
 - `rsdiffy export` subcommand — exports review comments and code tours as structured JSON for consumption by LLM agents and scripts. Supports `--git-ref` and `--status` filters.
-- **@agent mentions in comments** — write `@claude` or `@codex` in any comment or reply to invoke the agent inline. The agent receives full thread context (file, lines, conversation history) and is pre-granted read permissions to explore the codebase. Responses appear as bot replies in the same discussion thread.
+- **@agent mentions in comments** — write `@claude` or `@codex` in any comment or reply to invoke the agent inline. The agent receives the file-specific diff, thread context (file, lines, conversation history), and is pre-granted read permissions to explore the codebase. Responses appear as bot replies in the same discussion thread.
 
 ### Changed
 - Data directory moved from `~/.rsdiffy/` to `~/.config/rsdiffy/` to conform with XDG Base Directory conventions.

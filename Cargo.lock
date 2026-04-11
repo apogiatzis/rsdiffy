@@ -1245,7 +1245,7 @@ dependencies = [
 
 [[package]]
 name = "rsdiffy"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1270,7 +1270,7 @@ dependencies = [
 
 [[package]]
 name = "rsdiffy-git"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rsdiffy-parser",
  "serde",
@@ -1280,7 +1280,7 @@ dependencies = [
 
 [[package]]
 name = "rsdiffy-gitlab"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "regex",
  "reqwest",
@@ -1291,7 +1291,7 @@ dependencies = [
 
 [[package]]
 name = "rsdiffy-parser"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "regex",
  "serde",
