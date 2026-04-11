@@ -13,6 +13,8 @@ use crate::server::AppState;
 use crate::session;
 use crate::threads;
 
+use rsdiffy_git::diff;
+
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/api/sessions/current", get(get_current_session))
@@ -106,7 +108,7 @@ async fn create_thread(
 
     // Detect @agent mention in the initial comment
     if let Some((agent_name, instruction)) = agent::detect_agent_mention(comment_body) {
-        let prompt = build_prompt_from_thread(&thread, &instruction);
+        let prompt = build_prompt_from_thread(&_state, &thread, &instruction);
         let thread_id = thread.id.clone();
         tokio::spawn(agent::spawn_agent_reply(thread_id, agent_name, prompt));
     }
@@ -150,7 +152,7 @@ async fn add_reply(
     // Detect @agent mention in the reply
     if let Some((agent_name, instruction)) = agent::detect_agent_mention(comment_body) {
         if let Ok(thread) = threads::get_thread(&conn, &thread_id) {
-            let prompt = build_prompt_from_thread(&thread, &instruction);
+            let prompt = build_prompt_from_thread(&_state, &thread, &instruction);
             let tid = thread_id.clone();
             tokio::spawn(agent::spawn_agent_reply(tid, agent_name, prompt));
         }
@@ -215,7 +217,19 @@ async fn delete_comment(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
-fn build_prompt_from_thread(thread: &threads::Thread, instruction: &str) -> String {
+fn build_prompt_from_thread(state: &AppState, thread: &threads::Thread, instruction: &str) -> String {
+    // Get the file-specific diff so the agent reviews changes, not the whole file
+    let diff_args: Vec<&str> = state.diff_args.iter().map(|s| s.as_str()).collect();
+    let file_diff = if diff_args.is_empty() {
+        // Working tree diff — no base ref args
+        diff::get_diff(&["--", &thread.file_path]).unwrap_or_default()
+    } else {
+        let mut args = diff_args;
+        args.push("--");
+        args.push(&thread.file_path);
+        diff::get_diff(&args).unwrap_or_default()
+    };
+
     let conversation: Vec<(String, String)> = thread
         .comments
         .iter()
@@ -228,6 +242,7 @@ fn build_prompt_from_thread(thread: &threads::Thread, instruction: &str) -> Stri
         thread.start_line,
         thread.end_line,
         thread.anchor_content.as_deref(),
+        &file_diff,
         &conversation,
         instruction,
     )

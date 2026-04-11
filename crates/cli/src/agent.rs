@@ -75,12 +75,14 @@ pub fn invoke_agent(agent: &str, prompt: &str) -> Result<String, String> {
 }
 
 /// Build a conversational prompt for a discussion thread @mention.
+#[allow(clippy::too_many_arguments)]
 pub fn build_discussion_prompt(
     file_path: &str,
     side: &str,
     start_line: i64,
     end_line: i64,
     anchor_content: Option<&str>,
+    file_diff: &str,
     conversation: &[(String, String)],
     instruction: &str,
 ) -> String {
@@ -99,6 +101,12 @@ pub fn build_discussion_prompt(
         String::new()
     };
 
+    let diff_section = if file_diff.trim().is_empty() {
+        String::from("(No diff available for this file)")
+    } else {
+        format!("```diff\n{}\n```", file_diff.trim())
+    };
+
     let conversation_section = if conversation.is_empty() {
         String::from("(No prior messages)")
     } else {
@@ -115,8 +123,11 @@ pub fn build_discussion_prompt(
 ## Discussion Context
 File: {file_path} (lines {start_line}-{end_line}, {side} side)
 {anchor_section}
-Before responding, read the file `{file_path}` to understand the full context around lines {start_line}-{end_line}.
-If needed, also read related files or run `git diff` to understand recent changes.
+## Diff for this file
+{diff_section}
+
+Focus your review on the diff above — these are the changes under review. The comment is anchored at lines {start_line}-{end_line}.
+If you need additional context beyond the diff, read the file `{file_path}` or related files.
 
 ## Conversation So Far
 {conversation_section}
