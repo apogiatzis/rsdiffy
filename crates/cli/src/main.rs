@@ -648,6 +648,8 @@ fn run_review(git_ref: Option<String>, agent: String, custom_prompt: Option<Stri
         process::exit(1);
     });
 
+    let author_name = agent_to_author_name(&agent);
+
     let mut count = 0;
     for c in &comments {
         if threads::create_thread(
@@ -658,7 +660,7 @@ fn run_review(git_ref: Option<String>, agent: String, custom_prompt: Option<Stri
             c.start_line,
             c.end_line,
             &c.body,
-            "AI Review",
+            &author_name,
             "bot",
             None,
         )
@@ -691,6 +693,16 @@ fn resolve_agent_command(agent: &str) -> (String, Vec<String>) {
             (cmd, args)
         }
     }
+}
+
+fn agent_to_author_name(agent: &str) -> String {
+    let base = match agent {
+        "claude" | "codex" => agent,
+        custom => custom.split_whitespace().next().unwrap_or(custom),
+    };
+    base.chars()
+        .map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+        .collect()
 }
 
 fn build_review_prompt(diff: &str, custom_prompt: Option<&str>) -> String {
