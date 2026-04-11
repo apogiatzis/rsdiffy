@@ -12,6 +12,7 @@ A single binary that starts a local web server, parses git diffs, and renders th
 - **Code tours** — annotated walkthroughs of changes
 - **GitLab integration** — push/pull comments to merge requests (supports self-hosted)
 - **Revert** individual files or hunks from the browser
+- **AI agent mentions** — write `@claude` or `@codex` in any comment to get an inline AI response
 - **Open in editor** — jump to file:line in VS Code
 - **Instance management** — auto-reuse running instances, list, kill
 - **Dark mode** and configurable themes
@@ -86,6 +87,18 @@ rsdiffy doctor    # Check that rsdiffy can run correctly
 rsdiffy export    # Export review comments as JSON
 rsdiffy review    # AI-powered code review
 ```
+
+### @agent mentions
+
+In any comment or reply, mention an AI agent to get an inline response:
+
+```
+@claude review this code
+@codex explain this function
+@claude is there a potential race condition here?
+```
+
+The agent reads the file and surrounding context, then replies directly in the discussion thread. Supported agents: `claude`, `codex`.
 
 ### GitLab integration
 
