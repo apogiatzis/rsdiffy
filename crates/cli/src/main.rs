@@ -1,3 +1,4 @@
+mod agent;
 mod assets;
 mod db;
 mod registry;
@@ -596,45 +597,20 @@ fn run_review(git_ref: Option<String>, agent: String, custom_prompt: Option<Stri
 
     let system_prompt = build_review_prompt(&raw_diff, custom_prompt.as_deref());
 
-    let (cmd, args) = resolve_agent_command(&agent);
+    if agent::resolve_agent_command(&agent).is_none() {
+        eprintln!(
+            "{}",
+            format!("Unsupported agent '{}'. Supported agents: claude, codex", agent).red()
+        );
+        process::exit(1);
+    }
 
     println!("  {} Reviewing with {}...", "●".cyan(), agent.bold());
 
-    let output = std::process::Command::new(&cmd)
-        .args(&args)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::inherit())
-        .spawn()
-        .and_then(|mut child| {
-            use std::io::Write;
-            if let Some(ref mut stdin) = child.stdin {
-                let _ = stdin.write_all(system_prompt.as_bytes());
-            }
-            child.wait_with_output()
-        });
-
-    let output = match output {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
-        Ok(o) => {
-            eprintln!(
-                "{}",
-                format!("Agent exited with status {}", o.status).red()
-            );
-            process::exit(1);
-        }
-        Err(e) => {
-            eprintln!(
-                "{}",
-                format!(
-                    "Failed to run '{}': {}. Is the agent installed and in PATH?",
-                    cmd, e
-                )
-                .red()
-            );
-            process::exit(1);
-        }
-    };
+    let output = agent::invoke_agent(&agent, &system_prompt).unwrap_or_else(|e| {
+        eprintln!("{}", e.red());
+        process::exit(1);
+    });
 
     let comments = parse_agent_comments(&output);
 
@@ -680,20 +656,6 @@ fn run_review(git_ref: Option<String>, agent: String, custom_prompt: Option<Stri
         "  {}",
         format!("Run `rsdiffy {}` to view them.", effective_ref).dimmed()
     );
-}
-
-fn resolve_agent_command(agent: &str) -> (String, Vec<String>) {
-    match agent {
-        "claude" => ("claude".to_string(), vec!["-p".to_string()]),
-        "codex" => ("codex".to_string(), vec!["-q".to_string()]),
-        _ => {
-            eprintln!(
-                "{}",
-                format!("Unsupported agent '{}'. Supported agents: claude, codex", agent).red()
-            );
-            process::exit(1);
-        }
-    }
 }
 
 fn build_review_prompt(diff: &str, custom_prompt: Option<&str>) -> String {

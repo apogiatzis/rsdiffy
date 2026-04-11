@@ -7,6 +7,7 @@ use axum::routing::{delete, get, patch, post};
 use axum::Router;
 use serde::Deserialize;
 
+use crate::agent;
 use crate::db;
 use crate::server::AppState;
 use crate::session;
@@ -77,6 +78,7 @@ struct AuthorBody {
 }
 
 async fn create_thread(
+    State(_state): State<Arc<AppState>>,
     Json(body): Json<CreateThreadBody>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let sid = body.session_id.as_deref().ok_or_else(|| err400("Missing sessionId"))?;
@@ -101,6 +103,13 @@ async fn create_thread(
         body.anchor_content.as_deref(),
     )
     .map_err(err500)?;
+
+    // Detect @agent mention in the initial comment
+    if let Some((agent_name, instruction)) = agent::detect_agent_mention(comment_body) {
+        let prompt = build_prompt_from_thread(&thread, &instruction);
+        let thread_id = thread.id.clone();
+        tokio::spawn(agent::spawn_agent_reply(thread_id, agent_name, prompt));
+    }
 
     Ok(Json(serde_json::to_value(thread).unwrap()))
 }
@@ -127,6 +136,7 @@ struct ReplyBody {
 }
 
 async fn add_reply(
+    State(_state): State<Arc<AppState>>,
     Path(thread_id): Path<String>,
     Json(body): Json<ReplyBody>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
@@ -136,6 +146,15 @@ async fn add_reply(
     let conn = db::get_db().map_err(err500)?;
     let comment = threads::add_reply(&conn, &thread_id, comment_body, &author.name, &author.author_type)
         .map_err(err500)?;
+
+    // Detect @agent mention in the reply
+    if let Some((agent_name, instruction)) = agent::detect_agent_mention(comment_body) {
+        if let Ok(thread) = threads::get_thread(&conn, &thread_id) {
+            let prompt = build_prompt_from_thread(&thread, &instruction);
+            let tid = thread_id.clone();
+            tokio::spawn(agent::spawn_agent_reply(tid, agent_name, prompt));
+        }
+    }
 
     Ok(Json(serde_json::to_value(comment).unwrap()))
 }
@@ -194,6 +213,24 @@ async fn delete_comment(
     let conn = db::get_db().map_err(err500)?;
     threads::delete_comment(&conn, &comment_id).map_err(err500)?;
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+fn build_prompt_from_thread(thread: &threads::Thread, instruction: &str) -> String {
+    let conversation: Vec<(String, String)> = thread
+        .comments
+        .iter()
+        .map(|c| (c.author.name.clone(), c.body.clone()))
+        .collect();
+
+    agent::build_discussion_prompt(
+        &thread.file_path,
+        &thread.side,
+        thread.start_line,
+        thread.end_line,
+        thread.anchor_content.as_deref(),
+        &conversation,
+        instruction,
+    )
 }
 
 fn err400(msg: &str) -> (StatusCode, Json<serde_json::Value>) {
