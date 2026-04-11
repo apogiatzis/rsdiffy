@@ -924,3 +924,114 @@ fn truncate(s: &str, max: usize) -> String {
         s.to_string()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- parse_agent_comments ---
+
+    #[test]
+    fn parse_valid_json_array() {
+        let input = r#"[{"filePath":"src/main.rs","startLine":10,"endLine":10,"side":"new","body":"Bug here"}]"#;
+        let comments = parse_agent_comments(input);
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].file_path, "src/main.rs");
+        assert_eq!(comments[0].start_line, 10);
+        assert_eq!(comments[0].body, "Bug here");
+    }
+
+    #[test]
+    fn parse_empty_array() {
+        let comments = parse_agent_comments("[]");
+        assert!(comments.is_empty());
+    }
+
+    #[test]
+    fn parse_json_with_whitespace() {
+        let input = "  \n  [] \n  ";
+        let comments = parse_agent_comments(input);
+        assert!(comments.is_empty());
+    }
+
+    #[test]
+    fn parse_json_in_markdown_fences() {
+        let input = r#"Here are my findings:
+
+```json
+[{"filePath":"lib.rs","startLine":5,"endLine":5,"side":"new","body":"Consider error handling"}]
+```
+
+That's all."#;
+        let comments = parse_agent_comments(input);
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].file_path, "lib.rs");
+        assert_eq!(comments[0].body, "Consider error handling");
+    }
+
+    #[test]
+    fn parse_json_with_surrounding_text() {
+        let input = r#"I found one issue:
+[{"filePath":"a.rs","startLine":1,"endLine":2,"side":"new","body":"fix this"}]
+Hope that helps!"#;
+        let comments = parse_agent_comments(input);
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].file_path, "a.rs");
+    }
+
+    #[test]
+    fn parse_multiple_comments() {
+        let input = r#"[
+            {"filePath":"a.rs","startLine":1,"endLine":1,"side":"new","body":"first"},
+            {"filePath":"b.rs","startLine":10,"endLine":15,"side":"new","body":"second"}
+        ]"#;
+        let comments = parse_agent_comments(input);
+        assert_eq!(comments.len(), 2);
+        assert_eq!(comments[0].body, "first");
+        assert_eq!(comments[1].body, "second");
+        assert_eq!(comments[1].start_line, 10);
+        assert_eq!(comments[1].end_line, 15);
+    }
+
+    #[test]
+    fn parse_invalid_json_returns_empty() {
+        let comments = parse_agent_comments("this is not json at all");
+        assert!(comments.is_empty());
+    }
+
+    #[test]
+    fn parse_malformed_json_returns_empty() {
+        let comments = parse_agent_comments("[{bad json}]");
+        assert!(comments.is_empty());
+    }
+
+    // --- build_review_prompt ---
+
+    #[test]
+    fn review_prompt_contains_diff() {
+        let prompt = build_review_prompt("--- a/file.rs\n+++ b/file.rs", None);
+        assert!(prompt.contains("--- a/file.rs"));
+        assert!(prompt.contains("+++ b/file.rs"));
+    }
+
+    #[test]
+    fn review_prompt_uses_default_preamble() {
+        let prompt = build_review_prompt("diff", None);
+        assert!(prompt.contains("senior code reviewer"));
+    }
+
+    #[test]
+    fn review_prompt_uses_custom_preamble() {
+        let prompt = build_review_prompt("diff", Some("Focus on security issues only."));
+        assert!(prompt.contains("Focus on security issues only."));
+        assert!(!prompt.contains("senior code reviewer"));
+    }
+
+    #[test]
+    fn review_prompt_requests_json_output() {
+        let prompt = build_review_prompt("diff", None);
+        assert!(prompt.contains("filePath"));
+        assert!(prompt.contains("startLine"));
+        assert!(prompt.contains("JSON array"));
+    }
+}

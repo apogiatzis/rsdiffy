@@ -212,12 +212,104 @@ mod tests {
     fn resolve_claude() {
         let result = resolve_agent_command("claude");
         assert!(result.is_some());
-        let (cmd, _) = result.unwrap();
+        let (cmd, args) = result.unwrap();
         assert_eq!(cmd, "claude");
+        assert!(args.contains(&"-p".to_string()));
+        assert!(args.contains(&"--allowedTools".to_string()));
+    }
+
+    #[test]
+    fn resolve_codex() {
+        let result = resolve_agent_command("codex");
+        assert!(result.is_some());
+        let (cmd, args) = result.unwrap();
+        assert_eq!(cmd, "codex");
+        assert!(args.contains(&"--full-auto".to_string()));
     }
 
     #[test]
     fn resolve_unsupported() {
         assert!(resolve_agent_command("gpt").is_none());
+    }
+
+    #[test]
+    fn detect_multiline_instruction() {
+        let result = detect_agent_mention("@claude review this\nand also check for bugs");
+        assert!(result.is_some());
+        let (agent, instruction) = result.unwrap();
+        assert_eq!(agent, "claude");
+        assert!(instruction.contains("review this"));
+        assert!(instruction.contains("check for bugs"));
+    }
+
+    #[test]
+    fn detect_no_mention() {
+        assert_eq!(detect_agent_mention("just a regular comment"), None);
+    }
+
+    #[test]
+    fn prompt_includes_diff() {
+        let prompt = build_discussion_prompt(
+            "src/main.rs",
+            "new",
+            10,
+            20,
+            Some("fn main() {}"),
+            "+fn main() { println!(\"hello\"); }",
+            &[],
+            "review this",
+        );
+        assert!(prompt.contains("src/main.rs"));
+        assert!(prompt.contains("lines 10-20"));
+        assert!(prompt.contains("fn main() {}"));
+        assert!(prompt.contains("+fn main() { println!(\"hello\"); }"));
+        assert!(prompt.contains("review this"));
+    }
+
+    #[test]
+    fn prompt_default_instruction_when_empty() {
+        let prompt = build_discussion_prompt(
+            "lib.rs", "new", 1, 5, None, "some diff", &[], "",
+        );
+        assert!(prompt.contains("review this code and share your thoughts"));
+    }
+
+    #[test]
+    fn prompt_includes_conversation() {
+        let conversation = vec![
+            ("alice".to_string(), "I think this has a bug".to_string()),
+            ("bob".to_string(), "Which line?".to_string()),
+        ];
+        let prompt = build_discussion_prompt(
+            "lib.rs", "new", 1, 5, None, "diff", &conversation, "help",
+        );
+        assert!(prompt.contains("**alice:** I think this has a bug"));
+        assert!(prompt.contains("**bob:** Which line?"));
+    }
+
+    #[test]
+    fn prompt_empty_diff_shows_fallback() {
+        let prompt = build_discussion_prompt(
+            "lib.rs", "new", 1, 5, None, "  ", &[], "review",
+        );
+        assert!(prompt.contains("No diff available"));
+    }
+
+    #[test]
+    fn prompt_no_anchor_content() {
+        let prompt = build_discussion_prompt(
+            "lib.rs", "new", 1, 5, None, "diff here", &[], "review",
+        );
+        // Should not contain "Code snippet under discussion" when no anchor
+        assert!(!prompt.contains("Code snippet under discussion"));
+    }
+
+    #[test]
+    fn prompt_with_anchor_content() {
+        let prompt = build_discussion_prompt(
+            "lib.rs", "new", 1, 5, Some("let x = 42;"), "diff", &[], "review",
+        );
+        assert!(prompt.contains("Code snippet under discussion"));
+        assert!(prompt.contains("let x = 42;"));
     }
 }
