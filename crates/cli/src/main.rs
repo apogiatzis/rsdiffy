@@ -648,7 +648,7 @@ fn run_review(git_ref: Option<String>, agent: String, custom_prompt: Option<Stri
         process::exit(1);
     });
 
-    let author_name = agent_to_author_name(&agent);
+    let author_name = &agent;
 
     let mut count = 0;
     for c in &comments {
@@ -660,7 +660,7 @@ fn run_review(git_ref: Option<String>, agent: String, custom_prompt: Option<Stri
             c.start_line,
             c.end_line,
             &c.body,
-            &author_name,
+            author_name,
             "bot",
             None,
         )
@@ -686,23 +686,14 @@ fn resolve_agent_command(agent: &str) -> (String, Vec<String>) {
     match agent {
         "claude" => ("claude".to_string(), vec!["-p".to_string()]),
         "codex" => ("codex".to_string(), vec!["-q".to_string()]),
-        custom => {
-            let parts: Vec<&str> = custom.split_whitespace().collect();
-            let cmd = parts[0].to_string();
-            let args: Vec<String> = parts[1..].iter().map(|s| s.to_string()).collect();
-            (cmd, args)
+        _ => {
+            eprintln!(
+                "{}",
+                format!("Unsupported agent '{}'. Supported agents: claude, codex", agent).red()
+            );
+            process::exit(1);
         }
     }
-}
-
-fn agent_to_author_name(agent: &str) -> String {
-    let base = match agent {
-        "claude" | "codex" => agent,
-        custom => custom.split_whitespace().next().unwrap_or(custom),
-    };
-    base.chars()
-        .map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
-        .collect()
 }
 
 fn build_review_prompt(diff: &str, custom_prompt: Option<&str>) -> String {
