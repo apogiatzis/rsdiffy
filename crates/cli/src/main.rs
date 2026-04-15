@@ -1474,4 +1474,360 @@ Hope that helps!"#;
         assert!(prompt.contains("startLine"));
         assert!(prompt.contains("JSON array"));
     }
+
+    // --- comment workflow tests ---
+
+    fn setup_comment_db() -> (Connection, String) {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        crate::db::migrate(&conn).unwrap();
+        let session_id = "sess1";
+        conn.execute(
+            "INSERT INTO review_sessions (id, ref, head_hash) VALUES ('sess1', 'main', 'abc123')",
+            [],
+        )
+        .unwrap();
+        (conn, session_id.to_string())
+    }
+
+    #[test]
+    fn comment_add_end_line_defaults_to_line() {
+        let (conn, sid) = setup_comment_db();
+        let line: i64 = 42;
+        let end_line: Option<i64> = None;
+        let effective_end = end_line.unwrap_or(line);
+
+        let thread = threads::create_thread(
+            &conn, &sid, "src/main.rs", "new", line, effective_end, "Bug", "cli", "bot", None,
+        )
+        .unwrap();
+
+        assert_eq!(thread.start_line, 42);
+        assert_eq!(thread.end_line, 42);
+    }
+
+    #[test]
+    fn comment_add_explicit_end_line() {
+        let (conn, sid) = setup_comment_db();
+        let line: i64 = 10;
+        let end_line: Option<i64> = Some(20);
+        let effective_end = end_line.unwrap_or(line);
+
+        let thread = threads::create_thread(
+            &conn, &sid, "src/lib.rs", "new", line, effective_end, "Range", "cli", "bot", None,
+        )
+        .unwrap();
+
+        assert_eq!(thread.start_line, 10);
+        assert_eq!(thread.end_line, 20);
+    }
+
+    #[test]
+    fn comment_reply_resolves_prefix() {
+        let (conn, sid) = setup_comment_db();
+        let thread = threads::create_thread(
+            &conn, &sid, "a.rs", "new", 1, 1, "initial", "cli", "bot", None,
+        )
+        .unwrap();
+
+        // Resolve prefix (simulates CLI --thread with 8-char prefix)
+        let prefix = &thread.id[..8];
+        let resolved = threads::get_thread(&conn, prefix).unwrap();
+        assert_eq!(resolved.id, thread.id);
+
+        // Reply using resolved full ID
+        let reply = threads::add_reply(&conn, &resolved.id, "response", "agent", "bot").unwrap();
+        assert_eq!(reply.body, "response");
+
+        let fetched = threads::get_thread(&conn, &thread.id).unwrap();
+        assert_eq!(fetched.comments.len(), 2);
+    }
+
+    #[test]
+    fn comment_resolve_sets_resolved() {
+        let (conn, sid) = setup_comment_db();
+        let thread = threads::create_thread(
+            &conn, &sid, "a.rs", "new", 1, 1, "issue", "cli", "bot", None,
+        )
+        .unwrap();
+
+        let reopen = false;
+        let status = if reopen { "open" } else { "resolved" };
+        threads::update_thread_status(&conn, &thread.id, status, None, None, None).unwrap();
+
+        let fetched = threads::get_thread(&conn, &thread.id).unwrap();
+        assert_eq!(fetched.status, "resolved");
+    }
+
+    #[test]
+    fn comment_resolve_with_reopen_flag() {
+        let (conn, sid) = setup_comment_db();
+        let thread = threads::create_thread(
+            &conn, &sid, "a.rs", "new", 1, 1, "issue", "cli", "bot", None,
+        )
+        .unwrap();
+
+        threads::update_thread_status(&conn, &thread.id, "resolved", None, None, None).unwrap();
+
+        // Reopen
+        let reopen = true;
+        let status = if reopen { "open" } else { "resolved" };
+        threads::update_thread_status(&conn, &thread.id, status, None, None, None).unwrap();
+
+        let fetched = threads::get_thread(&conn, &thread.id).unwrap();
+        assert_eq!(fetched.status, "open");
+    }
+
+    #[test]
+    fn comment_resolve_with_summary_adds_comment() {
+        let (conn, sid) = setup_comment_db();
+        let thread = threads::create_thread(
+            &conn, &sid, "a.rs", "new", 1, 1, "issue", "cli", "bot", None,
+        )
+        .unwrap();
+
+        let summary = Some("Addressed in commit abc");
+        let (summary_body, summary_name, summary_type) = if let Some(s) = summary {
+            (Some(s), Some("system"), Some("bot"))
+        } else {
+            (None, None, None)
+        };
+
+        threads::update_thread_status(
+            &conn, &thread.id, "resolved", summary_body, summary_name, summary_type,
+        )
+        .unwrap();
+
+        let fetched = threads::get_thread(&conn, &thread.id).unwrap();
+        assert_eq!(fetched.status, "resolved");
+        assert_eq!(fetched.comments.len(), 2);
+        assert_eq!(fetched.comments[1].body, "Addressed in commit abc");
+        assert_eq!(fetched.comments[1].author.name, "system");
+    }
+
+    #[test]
+    fn comment_list_status_all_maps_to_none() {
+        let (conn, sid) = setup_comment_db();
+        threads::create_thread(&conn, &sid, "a.rs", "new", 1, 1, "open one", "u", "user", None)
+            .unwrap();
+        let t2 = threads::create_thread(
+            &conn, &sid, "b.rs", "new", 5, 5, "open two", "u", "user", None,
+        )
+        .unwrap();
+        threads::update_thread_status(&conn, &t2.id, "resolved", None, None, None).unwrap();
+
+        // status "all" → None filter
+        let status = "all";
+        let status_filter = match status {
+            "all" => None,
+            s => Some(s),
+        };
+        let all = threads::get_threads_for_session(&conn, &sid, status_filter).unwrap();
+        assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn comment_list_filters_by_status() {
+        let (conn, sid) = setup_comment_db();
+        threads::create_thread(&conn, &sid, "a.rs", "new", 1, 1, "stays open", "u", "user", None)
+            .unwrap();
+        let t2 = threads::create_thread(
+            &conn, &sid, "b.rs", "new", 5, 5, "will resolve", "u", "user", None,
+        )
+        .unwrap();
+        threads::update_thread_status(&conn, &t2.id, "resolved", None, None, None).unwrap();
+
+        let status_filter = Some("open");
+        let open = threads::get_threads_for_session(&conn, &sid, status_filter).unwrap();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].file_path, "a.rs");
+    }
+
+    #[test]
+    fn comment_list_filters_by_file() {
+        let (conn, sid) = setup_comment_db();
+        threads::create_thread(
+            &conn, &sid, "src/main.rs", "new", 1, 1, "main issue", "u", "user", None,
+        )
+        .unwrap();
+        threads::create_thread(
+            &conn, &sid, "src/lib.rs", "new", 5, 5, "lib issue", "u", "user", None,
+        )
+        .unwrap();
+        threads::create_thread(
+            &conn, &sid, "src/main.rs", "new", 20, 25, "another main", "u", "user", None,
+        )
+        .unwrap();
+
+        let mut thread_list = threads::get_threads_for_session(&conn, &sid, None).unwrap();
+        let file_filter = Some("src/main.rs".to_string());
+        if let Some(ref f) = file_filter {
+            thread_list.retain(|t| t.file_path == *f);
+        }
+
+        assert_eq!(thread_list.len(), 2);
+        assert!(thread_list.iter().all(|t| t.file_path == "src/main.rs"));
+    }
+
+    #[test]
+    fn comment_list_file_filter_no_match() {
+        let (conn, sid) = setup_comment_db();
+        threads::create_thread(
+            &conn, &sid, "src/main.rs", "new", 1, 1, "issue", "u", "user", None,
+        )
+        .unwrap();
+
+        let mut thread_list = threads::get_threads_for_session(&conn, &sid, None).unwrap();
+        thread_list.retain(|t| t.file_path == "nonexistent.rs");
+
+        assert!(thread_list.is_empty());
+    }
+
+    #[test]
+    fn comment_delete_thread_by_prefix() {
+        let (conn, sid) = setup_comment_db();
+        let thread = threads::create_thread(
+            &conn, &sid, "a.rs", "new", 1, 1, "delete me", "u", "user", None,
+        )
+        .unwrap();
+
+        // Resolve prefix then delete
+        let prefix = &thread.id[..8];
+        let resolved = threads::get_thread(&conn, prefix).unwrap();
+        threads::delete_thread(&conn, &resolved.id).unwrap();
+
+        assert!(threads::get_thread(&conn, &thread.id).is_err());
+    }
+
+    #[test]
+    fn comment_delete_individual_comment() {
+        let (conn, sid) = setup_comment_db();
+        let thread = threads::create_thread(
+            &conn, &sid, "a.rs", "new", 1, 1, "first", "u", "user", None,
+        )
+        .unwrap();
+        let reply = threads::add_reply(&conn, &thread.id, "second", "u", "user").unwrap();
+
+        threads::delete_comment(&conn, &reply.id).unwrap();
+
+        let fetched = threads::get_thread(&conn, &thread.id).unwrap();
+        assert_eq!(fetched.comments.len(), 1);
+        assert_eq!(fetched.comments[0].body, "first");
+    }
+
+    // --- import workflow tests ---
+
+    #[test]
+    fn import_deserializes_json_batch() {
+        let input = r#"[
+            {"filePath":"src/auth.rs","startLine":42,"endLine":42,"side":"new","body":"Token expiry not checked"},
+            {"filePath":"src/db.rs","startLine":15,"endLine":20,"side":"new","body":"SQL injection risk"}
+        ]"#;
+
+        let comments: Vec<AgentComment> = serde_json::from_str(input.trim()).unwrap();
+        assert_eq!(comments.len(), 2);
+        assert_eq!(comments[0].file_path, "src/auth.rs");
+        assert_eq!(comments[1].start_line, 15);
+        assert_eq!(comments[1].end_line, 20);
+    }
+
+    #[test]
+    fn import_creates_threads_and_counts() {
+        let (conn, sid) = setup_comment_db();
+
+        let input = r#"[
+            {"filePath":"src/auth.rs","startLine":42,"endLine":42,"side":"new","body":"Token expiry"},
+            {"filePath":"src/db.rs","startLine":15,"endLine":20,"side":"new","body":"SQL risk"},
+            {"filePath":"src/lib.rs","startLine":1,"endLine":5,"side":"new","body":"Missing docs"}
+        ]"#;
+
+        let comments: Vec<AgentComment> = serde_json::from_str(input.trim()).unwrap();
+        let author = "claude";
+        let author_type = "bot";
+
+        let mut imported = 0;
+        let mut failed = 0;
+        let mut thread_ids = Vec::new();
+
+        for c in &comments {
+            match threads::create_thread(
+                &conn, &sid, &c.file_path, &c.side, c.start_line, c.end_line, &c.body,
+                author, author_type, None,
+            ) {
+                Ok(t) => {
+                    thread_ids.push(t.id);
+                    imported += 1;
+                }
+                Err(_) => {
+                    failed += 1;
+                }
+            }
+        }
+
+        assert_eq!(imported, 3);
+        assert_eq!(failed, 0);
+        assert_eq!(thread_ids.len(), 3);
+
+        // Verify threads exist in DB
+        let all = threads::get_threads_for_session(&conn, &sid, None).unwrap();
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0].comments[0].author.name, "claude");
+        assert_eq!(all[0].comments[0].author.author_type, "bot");
+    }
+
+    #[test]
+    fn import_invalid_json_fails_deserialization() {
+        let input = "not valid json";
+        let result = serde_json::from_str::<Vec<AgentComment>>(input.trim());
+        assert!(result.is_err());
+    }
+
+    // --- full workflow: add → list → reply → resolve → delete ---
+
+    #[test]
+    fn full_comment_workflow() {
+        let (conn, sid) = setup_comment_db();
+
+        // 1. Add a comment
+        let thread = threads::create_thread(
+            &conn, &sid, "src/main.rs", "new", 42, 42, "Potential bug", "cli", "bot", None,
+        )
+        .unwrap();
+        assert_eq!(thread.status, "open");
+        assert_eq!(thread.comments.len(), 1);
+
+        // 2. List and verify it appears
+        let list = threads::get_threads_for_session(&conn, &sid, None).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, thread.id);
+
+        // 3. Reply using prefix resolution
+        let prefix = &thread.id[..8];
+        let resolved = threads::get_thread(&conn, prefix).unwrap();
+        threads::add_reply(&conn, &resolved.id, "I'll fix this", "dev", "user").unwrap();
+
+        let fetched = threads::get_thread(&conn, &thread.id).unwrap();
+        assert_eq!(fetched.comments.len(), 2);
+
+        // 4. Resolve with summary
+        threads::update_thread_status(
+            &conn, &thread.id, "resolved", Some("Fixed in PR #123"), Some("system"), Some("bot"),
+        )
+        .unwrap();
+
+        let fetched = threads::get_thread(&conn, &thread.id).unwrap();
+        assert_eq!(fetched.status, "resolved");
+        assert_eq!(fetched.comments.len(), 3);
+
+        // 5. Verify status filter works
+        let open = threads::get_threads_for_session(&conn, &sid, Some("open")).unwrap();
+        assert!(open.is_empty());
+        let resolved = threads::get_threads_for_session(&conn, &sid, Some("resolved")).unwrap();
+        assert_eq!(resolved.len(), 1);
+
+        // 6. Delete the thread
+        threads::delete_thread(&conn, &thread.id).unwrap();
+        let list = threads::get_threads_for_session(&conn, &sid, None).unwrap();
+        assert!(list.is_empty());
+    }
 }

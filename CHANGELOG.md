@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-04-15
+
+### Added
+- `rsdiffy comment` subcommand — manage review comments from the CLI. Supports `add`, `reply`, `resolve`, `list`, `get`, and `delete` actions. Thread IDs support 8+ character prefix matching.
+- `rsdiffy import` subcommand — batch import comments from JSON (stdin or file). Supports `--ref`, `--author`, `--author-type`, and `--file` options.
+- Comprehensive unit test coverage for comment CLI workflows, threads, tours, unescape, prompt building, and agent comment parsing.
+
 ## [0.2.0] - 2026-04-11
 
 ### Added
