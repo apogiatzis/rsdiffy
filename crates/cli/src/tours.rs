@@ -210,3 +210,93 @@ fn collapse_tours(rows: Vec<TourJoinedRow>) -> Vec<Tour> {
 
     tours
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    fn setup_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        crate::db::migrate(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO review_sessions (id, ref, head_hash) VALUES ('sess1', 'main', 'abc123')",
+            [],
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn create_tour_returns_tour() {
+        let conn = setup_db();
+        let tour = create_tour(&conn, "sess1", "Auth flow", "How auth works").unwrap();
+
+        assert_eq!(tour.topic, "Auth flow");
+        assert_eq!(tour.body, "How auth works");
+        assert_eq!(tour.status, "building");
+        assert!(tour.steps.is_empty());
+    }
+
+    #[test]
+    fn get_tour_by_id() {
+        let conn = setup_db();
+        let created = create_tour(&conn, "sess1", "Test tour", "").unwrap();
+        let fetched = get_tour(&conn, &created.id).unwrap();
+        assert_eq!(fetched.id, created.id);
+        assert_eq!(fetched.topic, "Test tour");
+    }
+
+    #[test]
+    fn get_tour_not_found() {
+        let conn = setup_db();
+        assert!(get_tour(&conn, "nonexistent").is_err());
+    }
+
+    #[test]
+    fn add_steps_with_auto_ordering() {
+        let conn = setup_db();
+        let tour = create_tour(&conn, "sess1", "Tour", "").unwrap();
+
+        let s1 = add_tour_step(&conn, &tour.id, "a.rs", 1, 10, "Step 1", None).unwrap();
+        let s2 = add_tour_step(&conn, &tour.id, "b.rs", 5, 15, "Step 2", Some("note")).unwrap();
+
+        assert_eq!(s1.sort_order, 0);
+        assert_eq!(s2.sort_order, 1);
+        assert_eq!(s2.annotation, Some("note".to_string()));
+
+        let fetched = get_tour(&conn, &tour.id).unwrap();
+        assert_eq!(fetched.steps.len(), 2);
+        assert_eq!(fetched.steps[0].file_path, "a.rs");
+        assert_eq!(fetched.steps[1].file_path, "b.rs");
+    }
+
+    #[test]
+    fn update_tour_status_changes_status() {
+        let conn = setup_db();
+        let tour = create_tour(&conn, "sess1", "Tour", "").unwrap();
+        assert_eq!(tour.status, "building");
+
+        update_tour_status(&conn, &tour.id, "complete").unwrap();
+        let fetched = get_tour(&conn, &tour.id).unwrap();
+        assert_eq!(fetched.status, "complete");
+    }
+
+    #[test]
+    fn get_tours_for_session_returns_all() {
+        let conn = setup_db();
+        create_tour(&conn, "sess1", "Tour A", "").unwrap();
+        create_tour(&conn, "sess1", "Tour B", "").unwrap();
+
+        let tours = get_tours_for_session(&conn, "sess1").unwrap();
+        assert_eq!(tours.len(), 2);
+    }
+
+    #[test]
+    fn get_tours_for_session_empty() {
+        let conn = setup_db();
+        let tours = get_tours_for_session(&conn, "sess1").unwrap();
+        assert!(tours.is_empty());
+    }
+}

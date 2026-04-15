@@ -328,3 +328,244 @@ fn collapse_threads(rows: Vec<JoinedRow>) -> Vec<Thread> {
 
     threads
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    fn setup_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        crate::db::migrate(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO review_sessions (id, ref, head_hash) VALUES ('sess1', 'main', 'abc123')",
+            [],
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn create_thread_returns_thread_with_comment() {
+        let conn = setup_db();
+        let thread = create_thread(
+            &conn, "sess1", "src/main.rs", "new", 10, 20, "Bug here", "alice", "user", None,
+        )
+        .unwrap();
+
+        assert_eq!(thread.file_path, "src/main.rs");
+        assert_eq!(thread.side, "new");
+        assert_eq!(thread.start_line, 10);
+        assert_eq!(thread.end_line, 20);
+        assert_eq!(thread.status, "open");
+        assert_eq!(thread.comments.len(), 1);
+        assert_eq!(thread.comments[0].body, "Bug here");
+        assert_eq!(thread.comments[0].author.name, "alice");
+    }
+
+    #[test]
+    fn create_thread_with_anchor_content() {
+        let conn = setup_db();
+        let thread = create_thread(
+            &conn, "sess1", "lib.rs", "old", 1, 5, "Review this", "bot", "bot",
+            Some("fn main() {}"),
+        )
+        .unwrap();
+
+        assert_eq!(thread.anchor_content, Some("fn main() {}".to_string()));
+    }
+
+    #[test]
+    fn get_thread_by_full_id() {
+        let conn = setup_db();
+        let created = create_thread(
+            &conn, "sess1", "a.rs", "new", 1, 1, "test", "user", "user", None,
+        )
+        .unwrap();
+
+        let fetched = get_thread(&conn, &created.id).unwrap();
+        assert_eq!(fetched.id, created.id);
+        assert_eq!(fetched.comments.len(), 1);
+    }
+
+    #[test]
+    fn get_thread_by_prefix() {
+        let conn = setup_db();
+        let created = create_thread(
+            &conn, "sess1", "a.rs", "new", 1, 1, "test", "user", "user", None,
+        )
+        .unwrap();
+
+        let prefix = &created.id[..8];
+        let fetched = get_thread(&conn, prefix).unwrap();
+        assert_eq!(fetched.id, created.id);
+    }
+
+    #[test]
+    fn get_thread_not_found() {
+        let conn = setup_db();
+        assert!(get_thread(&conn, "nonexistent-id-that-does-not-exist").is_err());
+    }
+
+    #[test]
+    fn add_reply_creates_comment() {
+        let conn = setup_db();
+        let thread = create_thread(
+            &conn, "sess1", "a.rs", "new", 1, 1, "initial", "alice", "user", None,
+        )
+        .unwrap();
+
+        let reply = add_reply(&conn, &thread.id, "reply body", "bob", "user").unwrap();
+        assert_eq!(reply.body, "reply body");
+        assert_eq!(reply.author.name, "bob");
+
+        let fetched = get_thread(&conn, &thread.id).unwrap();
+        assert_eq!(fetched.comments.len(), 2);
+    }
+
+    #[test]
+    fn user_reply_reopens_resolved_thread() {
+        let conn = setup_db();
+        let thread = create_thread(
+            &conn, "sess1", "a.rs", "new", 1, 1, "issue", "alice", "user", None,
+        )
+        .unwrap();
+
+        update_thread_status(&conn, &thread.id, "resolved", None, None, None).unwrap();
+        let fetched = get_thread(&conn, &thread.id).unwrap();
+        assert_eq!(fetched.status, "resolved");
+
+        add_reply(&conn, &thread.id, "wait, not fixed", "alice", "user").unwrap();
+        let fetched = get_thread(&conn, &thread.id).unwrap();
+        assert_eq!(fetched.status, "open");
+    }
+
+    #[test]
+    fn bot_reply_does_not_reopen_thread() {
+        let conn = setup_db();
+        let thread = create_thread(
+            &conn, "sess1", "a.rs", "new", 1, 1, "issue", "alice", "user", None,
+        )
+        .unwrap();
+
+        update_thread_status(&conn, &thread.id, "resolved", None, None, None).unwrap();
+        add_reply(&conn, &thread.id, "agent response", "claude", "bot").unwrap();
+
+        let fetched = get_thread(&conn, &thread.id).unwrap();
+        assert_eq!(fetched.status, "resolved");
+    }
+
+    #[test]
+    fn get_threads_for_session_returns_all() {
+        let conn = setup_db();
+        create_thread(&conn, "sess1", "a.rs", "new", 1, 1, "first", "u", "user", None).unwrap();
+        create_thread(&conn, "sess1", "b.rs", "new", 5, 5, "second", "u", "user", None).unwrap();
+
+        let threads = get_threads_for_session(&conn, "sess1", None).unwrap();
+        assert_eq!(threads.len(), 2);
+    }
+
+    #[test]
+    fn get_threads_for_session_filters_by_status() {
+        let conn = setup_db();
+        let t1 = create_thread(&conn, "sess1", "a.rs", "new", 1, 1, "open one", "u", "user", None).unwrap();
+        create_thread(&conn, "sess1", "b.rs", "new", 5, 5, "open two", "u", "user", None).unwrap();
+        update_thread_status(&conn, &t1.id, "resolved", None, None, None).unwrap();
+
+        let open = get_threads_for_session(&conn, "sess1", Some("open")).unwrap();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].file_path, "b.rs");
+
+        let resolved = get_threads_for_session(&conn, "sess1", Some("resolved")).unwrap();
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].file_path, "a.rs");
+    }
+
+    #[test]
+    fn update_thread_status_with_summary() {
+        let conn = setup_db();
+        let thread = create_thread(
+            &conn, "sess1", "a.rs", "new", 1, 1, "issue", "alice", "user", None,
+        )
+        .unwrap();
+
+        update_thread_status(
+            &conn, &thread.id, "resolved", Some("Fixed it"), Some("system"), Some("bot"),
+        )
+        .unwrap();
+
+        let fetched = get_thread(&conn, &thread.id).unwrap();
+        assert_eq!(fetched.status, "resolved");
+        assert_eq!(fetched.comments.len(), 2);
+        assert_eq!(fetched.comments[1].body, "Fixed it");
+    }
+
+    #[test]
+    fn delete_thread_removes_thread_and_comments() {
+        let conn = setup_db();
+        let thread = create_thread(
+            &conn, "sess1", "a.rs", "new", 1, 1, "test", "u", "user", None,
+        )
+        .unwrap();
+        add_reply(&conn, &thread.id, "reply", "u", "user").unwrap();
+
+        delete_thread(&conn, &thread.id).unwrap();
+        assert!(get_thread(&conn, &thread.id).is_err());
+    }
+
+    #[test]
+    fn delete_all_threads_for_session_clears_everything() {
+        let conn = setup_db();
+        create_thread(&conn, "sess1", "a.rs", "new", 1, 1, "first", "u", "user", None).unwrap();
+        create_thread(&conn, "sess1", "b.rs", "new", 2, 2, "second", "u", "user", None).unwrap();
+
+        delete_all_threads_for_session(&conn, "sess1").unwrap();
+        let threads = get_threads_for_session(&conn, "sess1", None).unwrap();
+        assert!(threads.is_empty());
+    }
+
+    #[test]
+    fn edit_comment_updates_body() {
+        let conn = setup_db();
+        let thread = create_thread(
+            &conn, "sess1", "a.rs", "new", 1, 1, "original", "u", "user", None,
+        )
+        .unwrap();
+        let comment_id = &thread.comments[0].id;
+
+        edit_comment(&conn, comment_id, "updated body").unwrap();
+
+        let fetched = get_thread(&conn, &thread.id).unwrap();
+        assert_eq!(fetched.comments[0].body, "updated body");
+    }
+
+    #[test]
+    fn delete_last_comment_deletes_thread() {
+        let conn = setup_db();
+        let thread = create_thread(
+            &conn, "sess1", "a.rs", "new", 1, 1, "only comment", "u", "user", None,
+        )
+        .unwrap();
+        let comment_id = thread.comments[0].id.clone();
+
+        delete_comment(&conn, &comment_id).unwrap();
+        assert!(get_thread(&conn, &thread.id).is_err());
+    }
+
+    #[test]
+    fn delete_one_of_many_comments_keeps_thread() {
+        let conn = setup_db();
+        let thread = create_thread(
+            &conn, "sess1", "a.rs", "new", 1, 1, "first", "u", "user", None,
+        )
+        .unwrap();
+        let reply = add_reply(&conn, &thread.id, "second", "u", "user").unwrap();
+
+        delete_comment(&conn, &reply.id).unwrap();
+
+        let fetched = get_thread(&conn, &thread.id).unwrap();
+        assert_eq!(fetched.comments.len(), 1);
+        assert_eq!(fetched.comments[0].body, "first");
+    }
+}
